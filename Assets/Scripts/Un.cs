@@ -3,30 +3,37 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
+[RequireComponent(typeof(Rigidbody))]
 public class Un : MonoBehaviour, RawInput.IPlayerActions
 {
     private enum StateMachine
     {
-        Floor, //Contains state in air
+        Floor, // Contains state in air
         Wall,
         Ceil
     }
 
-    private CharacterController _characterController;
+    private Rigidbody _rb;
+    private Collider _collider;
     private StateMachine _stateMachine = StateMachine.Floor;
     private RawInput _rawInput;
     private RawInput.PlayerActions _playerActions;
     private float _xRotation = 0f; // 카메라 상하 회전 누적값
 
     [SerializeField] private float moveSpeed = 5f;
+    [SerializeField] private float jumpForce = 5f;
     [SerializeField] private float rayMaxDistance = 5f;
     [SerializeField] private float gravity = 9.81f;
     [SerializeField] private LayerMask wallLayerMask = ~0;
+    [SerializeField] private LayerMask groundLayerMask = ~0;
+    [SerializeField] private float groundCheckDistance = 0.2f;
 
     private Vector2 _moveInput;
     private Vector3 _wallFaceNormal;
     private bool _isClicking = false;
     private float _verticalVelocity = 0f;
+    private bool _isGrounded = false;
+    private float _jumpBufferTimer = 0f;
     private Coroutine _wallCheckCoroutine;
 
     [SerializeField] private Camera cam;
@@ -41,12 +48,18 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         _rawInput = new RawInput();
         _playerActions = _rawInput.Player;
         _playerActions.AddCallbacks(this);
-        TryGetComponent(out _characterController);
 
-        if (!_characterController)
+        TryGetComponent(out _rb);
+        if (!_rb)
         {
-            Destroy(this);
+            _rb = gameObject.AddComponent<Rigidbody>();
         }
+
+        TryGetComponent(out _collider);
+
+        _rb.useGravity = false;
+        _rb.freezeRotation = true;
+        _rb.interpolation = RigidbodyInterpolation.Interpolate;
 
         if (cam == null)
         {
@@ -84,7 +97,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         }
     }
 
-    private void Update()
+    private void FixedUpdate()
     {
         switch (_stateMachine)
         {
@@ -92,10 +105,9 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                 FloorMove();
                 break;
             case StateMachine.Wall:
-                WallMove();
+                // TODO: 벽 이동 로직 작성 공간
                 break;
             case StateMachine.Ceil:
-                CeilMove();
                 break;
             default:
                 throw new ArgumentOutOfRangeException();
@@ -107,64 +119,47 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         _moveInput = context.ReadValue<Vector2>();
     }
 
-    private void CeilMove()
-    {
-        throw new NotImplementedException();
-    }
-
-    private void WallMove()
-    {
-        // 이동 입력이 있을 때마다 _wallFaceNormal 방향(벽 쪽)으로 레이를 쏴서 벽 법선 재계산 후 업데이트
-        if (_moveInput.sqrMagnitude > 0.001f)
-        {
-            Ray ray = new Ray(transform.position, -_wallFaceNormal);
-            if (Physics.Raycast(ray, out RaycastHit hit, rayMaxDistance, wallLayerMask))
-            {
-                _wallFaceNormal = hit.normal;
-            }
-        }
-
-        // 벽 상방(Up) 벡터 계산: 세계 상방(Vector3.up)을 벽 면으로 투영
-        Vector3 wallUp = Vector3.ProjectOnPlane(Vector3.up, _wallFaceNormal).normalized;
-        if (wallUp.sqrMagnitude < 0.001f)
-        {
-            wallUp = Vector3.ProjectOnPlane(transform.forward, _wallFaceNormal).normalized;
-        }
-        Debug.DrawRay(transform.position, wallUp * rayMaxDistance, Color.red);
-
-        // 벽 우방(Right) 벡터 계산: 벽 법선과 벽 상방 벡터의 외적
-        Vector3 wallRight = Vector3.Cross(_wallFaceNormal, wallUp).normalized;
-
-        // 중력: 벽 법선의 반대 방향(-_wallFaceNormal)으로 적용
-        Vector3 wallGravity = -_wallFaceNormal * gravity;
-
-        // 플레이어 앞/뒤 입력 -> 위/아래 방향, 플레이어 좌/우 입력 -> 좌/우 방향
-        Vector3 inputMove = (wallUp * _moveInput.y + wallRight * _moveInput.x) * moveSpeed;
-
-        Vector3 finalVelocity = inputMove + wallGravity;
-        _characterController.Move(finalVelocity * Time.deltaTime);
-    }
-
     private void FloorMove()
     {
-        // 평지 중력 적용
-        if (_characterController.isGrounded)
+        float checkDist = _collider != null ? _collider.bounds.extents.y + 0.1f : groundCheckDistance;
+        _isGrounded = Physics.Raycast(transform.position, Vector3.down, checkDist, groundLayerMask);
+
+        if (_jumpBufferTimer > 0f)
         {
-            _verticalVelocity = -2f; // 접지 유지를 위한 하향 힘
+            _jumpBufferTimer -= Time.fixedDeltaTime;
+        }
+
+        // 평지 중력 및 점프 적용
+        if (_isGrounded)
+        {
+            if (_jumpBufferTimer > 0f)
+            {
+                _verticalVelocity = jumpForce;
+                _jumpBufferTimer = 0f;
+                _isGrounded = false;
+            }
+            else if (_verticalVelocity < 0f)
+            {
+                _verticalVelocity = -2f; // 접지 유지를 위한 하향 힘
+            }
         }
         else
         {
-            _verticalVelocity -= gravity * Time.deltaTime;
+            _verticalVelocity -= gravity * Time.fixedDeltaTime;
         }
 
         Vector3 move = (transform.right * _moveInput.x + transform.forward * _moveInput.y) * moveSpeed;
-        move.y += _verticalVelocity;
+        move.y = _verticalVelocity;
 
-        _characterController.Move(move * Time.deltaTime);
+        _rb.velocity = move;
     }
 
     public void OnJump(InputAction.CallbackContext context)
     {
+        if (context.started || context.performed)
+        {
+            _jumpBufferTimer = 0.2f;
+        }
     }
 
     public void OnClick(InputAction.CallbackContext context)
@@ -186,6 +181,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                 _wallCheckCoroutine = null;
             }
             _stateMachine = StateMachine.Floor;
+            _verticalVelocity = 0f;
         }
     }
 
@@ -221,12 +217,19 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         float mouseY = mouseDelta.y;
         _xRotation -= mouseY;
         _xRotation = Mathf.Clamp(_xRotation, minPitch, maxPitch);
-        if (cam != null)
+        if (cam != null && headTransform != null)
         {
             headTransform.localRotation = Quaternion.Euler(_xRotation, 0f, 0f);
         }
-
-        transform.Rotate(Vector3.up * mouseX);
+        
+        if (_stateMachine == StateMachine.Floor)
+        {
+            transform.Rotate(Vector3.up * mouseX);
+        }
+        else if (headTransform != null)
+        {
+            headTransform.Rotate(Vector3.up * mouseX);
+        }
     }
 
     [Header("Scroll / Zoom Settings")] [SerializeField]
