@@ -360,14 +360,14 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 551455889}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 16.5, z: 0}
+  m_LocalRotation: {x: -0.49991274, y: 0.49991274, z: 0.50008726, w: 0.50008726}
+  m_LocalPosition: {x: -2.7632318, y: -0.03581721, z: 0.0031535842}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1267009715}
-  m_Father: {fileID: 1688630969}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_Father: {fileID: 908274544}
+  m_LocalEulerAnglesHint: {x: -89.98, y: 0, z: 90}
 --- !u!1 &705507993
 GameObject:
   m_ObjectHideFlags: 0
@@ -570,6 +570,11 @@ MeshFilter:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 824498070}
   m_Mesh: {fileID: 10206, guid: 0000000000000000e000000000000000, type: 0}
+--- !u!4 &908274544 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 2895478651811301939, guid: 499a68e1ff1d229c78a4faf95d7ee63c, type: 3}
+  m_PrefabInstance: {fileID: 1906159835}
+  m_PrefabAsset: {fileID: 0}
 --- !u!1 &1007890717
 GameObject:
   m_ObjectHideFlags: 0
@@ -774,11 +779,6 @@ GameObject:
   m_CorrespondingSourceObject: {fileID: 919132149155446097, guid: 499a68e1ff1d229c78a4faf95d7ee63c, type: 3}
   m_PrefabInstance: {fileID: 1906159835}
   m_PrefabAsset: {fileID: 0}
---- !u!4 &1688630969 stripped
-Transform:
-  m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: 499a68e1ff1d229c78a4faf95d7ee63c, type: 3}
-  m_PrefabInstance: {fileID: 1906159835}
-  m_PrefabAsset: {fileID: 0}
 --- !u!114 &1688630970
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -802,6 +802,25 @@ MonoBehaviour:
     serializedVersion: 2
     m_Bits: 4294967295
   groundCheckDistance: 0.2
+  wallDistance: 0.6
+  wallSnapSpeed: 15
+  bodyAlignSpeed: 12
+  normalSmoothSpeed: 15
+  ceilHangDistance: 1.3
+  ceilStepDistance: 0.45
+  ceilReachDistance: 0.6
+  ceilArcDip: 0.15
+  ceilBodyAlignSpeed: 8
+  animator: {fileID: 0}
+  climbStepDistance: 0.45
+  handReachDistance: 0.65
+  shoulderSpread: 0.3
+  handHeightOffset: 0.2
+  handMoveDuration: 0.18
+  bodyMoveDuration: 0.15
+  arcNormalOffset: 0.15
+  arcSideOffset: 0.12
+  arcUpOffset: 0.05
   cam: {fileID: 1267009717}
   mouseSensitivity: 0.1
   minPitch: -80
@@ -928,10 +947,14 @@ PrefabInstance:
       propertyPath: m_Name
       value: Character+Bone
       objectReference: {fileID: 0}
+    - target: {fileID: 5866666021909216657, guid: 499a68e1ff1d229c78a4faf95d7ee63c, type: 3}
+      propertyPath: m_Controller
+      value: 
+      objectReference: {fileID: 9100000, guid: 4625a10a15e6d4639b15ba4a2bea0bd1, type: 2}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects:
-    - targetCorrespondingSourceObject: {fileID: -8679921383154817045, guid: 499a68e1ff1d229c78a4faf95d7ee63c, type: 3}
+    - targetCorrespondingSourceObject: {fileID: 2895478651811301939, guid: 499a68e1ff1d229c78a4faf95d7ee63c, type: 3}
       insertIndex: -1
       addedObject: {fileID: 551455890}
     m_AddedComponents:
