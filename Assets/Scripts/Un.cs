@@ -14,7 +14,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
 
     private Rigidbody _rb;
     public Collider _collider;
-    private StateMachine _stateMachine = StateMachine.Floor;
+    [SerializeField] private StateMachine _stateMachine = StateMachine.Floor;
     private RawInput _rawInput;
     private RawInput.PlayerActions _playerActions;
 
@@ -37,6 +37,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     private bool _isGrounded = false;
     private float _jumpBufferTimer = 0f;
     private Coroutine _wallCheckCoroutine;
+    private Coroutine _wallClimbCoroutine;
 
     [Header("Camera & Head Tracking")] [SerializeField]
     private Camera cam;
@@ -47,11 +48,17 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     [SerializeField] private float mouseSensitivity = 0.1f;
     [SerializeField] private float minPitch = -80f; // 아래쪽 최대 각도
     [SerializeField] private float maxPitch = 80f; // 위쪽 최대 각도
+    [SerializeField] private float wallYawLimit = 70f; // 벽 등반 시 좌우 시야각 한계
 
     [Header("Wall Climbing")] [SerializeField]
     private Transform leftUpperArm;
 
     [SerializeField] private Transform rightUpperArm;
+    [SerializeField] private Transform leftCalf;
+    [SerializeField] private Transform rightCalf;
+    [SerializeField] private float wallDistance = 0.5f;
+    [SerializeField] private float armLength = 0.7f;
+    [SerializeField] private float wallClimbDuration = 0.5f;
 
     [Header("Scroll / Zoom Settings")] [SerializeField]
     private float scrollSensitivity = 0.01f;
@@ -60,8 +67,19 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     [SerializeField] private float maxDistance = 0f;
     private float _currentCamDistance = 0f;
 
-    private float _xRotation = 0f; // 카메라 상하 각도 (Pitch)
-    private float _climbYaw = 0f; // 등반 시 카메라 좌우 둘러보기 각도 (Yaw)
+    // 통합 각도 상태 (Single Source of Truth)
+    private float _pitch = 0f; // 상하 각도 (Pitch)
+    private float _yaw = 0f; // 지상: 월드 Yaw, 벽: 벽 기준 상대 Yaw
+    private bool _isRightTurn = true;
+    private Vector3 _rightHandPos;
+    private Vector3 _leftHandPos;
+    private Vector3 _rightFootPos;
+    private Vector3 _leftFootPos;
+    
+    
+    [Header("IK Settings")]
+    [Range(0f, 1f)] [SerializeField] private float handIKWeight = 1f;
+    [Range(0f, 1f)] [SerializeField] private float footIKWeight = 1f;
 
 
     private void Awake()
@@ -88,6 +106,9 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         _rb.freezeRotation = true;
         _rb.interpolation = RigidbodyInterpolation.Interpolate;
 
+        // 초기 수평 각도 설정
+        _yaw = transform.eulerAngles.y;
+
         // 카메라 설정
         if (cam == null)
         {
@@ -101,12 +122,12 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
             headTransform = animator.GetBoneTransform(HumanBodyBones.Head);
         }
 
-        // 독립 카메라 피벗 생성 (뼈대의 90도 왜곡 축 영향 완전 차단)
+        // 독립 카메라 피벗 생성 (뼈대의 회전 왜곡 영향 차단)
         if (camPivot == null)
         {
             GameObject pivotGo = new GameObject("CameraPivot");
             camPivot = pivotGo.transform;
-            camPivot.position = headTransform != null ? headTransform.position : transform.position + Vector3.up * 1.5f;
+            camPivot.position = GetCameraPivotPosition();
             camPivot.rotation = transform.rotation;
         }
 
@@ -144,6 +165,11 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
             StopCoroutine(_wallCheckCoroutine);
             _wallCheckCoroutine = null;
         }
+        if (_wallClimbCoroutine != null)
+        {
+            StopCoroutine(_wallClimbCoroutine);
+            _wallClimbCoroutine = null;
+        }
     }
 
     private void FixedUpdate()
@@ -161,31 +187,41 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     }
 
     /// <summary>
-    /// 모든 애니메이션 및 IK가 완료된 후, 카메라 피벗이 머리 뼈 위치를 정확히 추적하도록 동기화합니다.
-    /// 뼈의 왜곡된 회전값은 무시하고, 순수한 카메라 시선 회전값만 적용합니다.
+    /// 단일 Pitch/Yaw 각도를 기준으로 몸체(Body)와 카메라 피벗(CameraPivot)의 위치/회전을 동기화합니다.
     /// </summary>
     private void LateUpdate()
     {
         if (camPivot == null) return;
 
-        // 1. 머리 뼈 위치 실시간 추적 (애니메이션에 맞춰 머리가 움직여도 정확히 따라감)
-        Vector3 targetPivotPos = headTransform != null
-            ? headTransform.position + transform.TransformDirection(cameraEyeOffset)
-            : transform.position + Vector3.up * 1.5f;
-        camPivot.position = targetPivotPos;
+        // 1. 카메라 피벗 위치 동기화 (머리 뼈 기준)
+        camPivot.position = GetCameraPivotPosition();
 
-        // 2. 카메라 회전 적용 (뼈대의 90도 회전축을 타지 않고 똑바로 회전)
+        // 2. 상태에 따른 몸체 및 카메라 회전 동기화
         if (_stateMachine == StateMachine.Floor)
         {
-            // 지상에서는 몸통의 Y축 회전 + 카메라 상하(Pitch) 회전
-            camPivot.rotation = Quaternion.Euler(_xRotation, transform.eulerAngles.y, 0f);
+            transform.rotation = Quaternion.Euler(0f, _yaw, 0f);
+            camPivot.rotation = Quaternion.Euler(_pitch, _yaw, 0f);
         }
-        else
+        else // Wall
         {
-            // 등반 중에는 몸통 기준 상대적 시점 둘러보기
-            Quaternion baseRot = transform.rotation;
-            camPivot.rotation = baseRot * Quaternion.Euler(_xRotation, _climbYaw, 0f);
+            // 벽면을 따라 위로 향하는 Up 벡터 계산 (경사벽/오버행 등 대응)
+            Vector3 wallUp = Vector3.ProjectOnPlane(Vector3.up, _surfaceNormal).normalized;
+            if (wallUp.sqrMagnitude < 0.001f)
+            {
+                wallUp = transform.up;
+            }
+
+            Quaternion wallBaseRot = Quaternion.LookRotation(-_surfaceNormal, wallUp);
+            transform.rotation = wallBaseRot;
+            camPivot.rotation = wallBaseRot * Quaternion.Euler(_pitch, _yaw, 0f);
         }
+    }
+
+    private Vector3 GetCameraPivotPosition()
+    {
+        return headTransform != null
+            ? headTransform.position + transform.TransformDirection(cameraEyeOffset)
+            : transform.position + Vector3.up * 1.5f;
     }
 
     public void OnMove(InputAction.CallbackContext context)
@@ -195,14 +231,6 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
 
     private void FloorMove()
     {
-        // 바닥 상태에서는 항상 몸체를 월드 Up(Vector3.up) 기준으로 똑바로 정렬 유지
-        Vector3 forwardOnFloor = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
-        if (forwardOnFloor.sqrMagnitude > 0.001f)
-        {
-            Quaternion targetFloorRot = Quaternion.LookRotation(forwardOnFloor, Vector3.up);
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetFloorRot, Time.fixedDeltaTime * 20f);
-        }
-
         float checkDist = _collider != null ? _collider.bounds.extents.y + 0.1f : groundCheckDistance;
         _isGrounded = Physics.Raycast(transform.position, Vector3.down, checkDist, groundLayerMask);
 
@@ -235,36 +263,6 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         _rb.velocity = move;
     }
 
-    /// <summary>
-    /// Floor 상태 진입 시 몸을 즉시 월드 기준 위쪽(Vector3.up)으로 정렬하고 카메라 시선 방향을 바라보도록 설정합니다.
-    /// </summary>
-    private void UprightBodyOnFloor()
-    {
-        Vector3 fwd = Vector3.zero;
-        if (cam != null)
-        {
-            fwd = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up).normalized;
-        }
-
-        if (fwd.sqrMagnitude < 0.001f)
-        {
-            fwd = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
-        }
-
-        if (fwd.sqrMagnitude < 0.001f)
-        {
-            fwd = Vector3.ProjectOnPlane(-transform.up, Vector3.up).normalized;
-        }
-
-        if (fwd.sqrMagnitude < 0.001f)
-        {
-            fwd = Vector3.forward;
-        }
-
-        transform.rotation = Quaternion.LookRotation(fwd, Vector3.up);
-        _climbYaw = 0f;
-    }
-
     public void OnJump(InputAction.CallbackContext context)
     {
         if (context.started || context.performed)
@@ -274,39 +272,246 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
 
     public void OnClick(InputAction.CallbackContext context)
     {
-        if (context.started || context.performed && _wallCheckCoroutine == null)
+        if (context.started || (context.performed && _wallCheckCoroutine == null))
         {
-            _wallCheckCoroutine = StartCoroutine(WallCheckCoroutine());
+            if (_wallCheckCoroutine == null)
+            {
+                _wallCheckCoroutine = StartCoroutine(WallCheckCoroutine());
+            }
         }
-        else if (context.canceled && _wallCheckCoroutine != null)
+        else if (context.canceled)
         {
-            StopCoroutine(_wallCheckCoroutine);
-            _wallCheckCoroutine = null;
-            _stateMachine = StateMachine.Floor;
+            if (_wallCheckCoroutine != null)
+            {
+                StopCoroutine(_wallCheckCoroutine);
+                _wallCheckCoroutine = null;
+            }
+
+            if (_stateMachine == StateMachine.Wall)
+            {
+                TransitionToFloor();
+            }
         }
+    }
+
+    private void TransitionToWall(Vector3 hitPoint, Vector3 hitNormal)
+    {
+        _surfaceNormal = hitNormal;
+        _surfaceHitPoint = hitPoint;
+        _stateMachine = StateMachine.Wall;
+
+        // 벽 상태 진입 시 물리 속도 초기화 (잔여 속도로 밀려나는 현상 방지)
+        _rb.velocity = Vector3.zero;
+        _verticalVelocity = 0f;
+
+        // 벽에 붙을 때 벽 기준 상대 Yaw를 0(정면)으로 초기화
+        _yaw = 0f;
+
+        Vector3 wallUp = Vector3.ProjectOnPlane(Vector3.up, hitNormal).normalized;
+        if (wallUp.sqrMagnitude < 0.001f)
+        {
+            wallUp = Vector3.up;
+        }
+
+        transform.position = hitPoint + hitNormal * wallDistance;
+        transform.rotation = Quaternion.LookRotation(-hitNormal, wallUp);
+    }
+
+    private void TransitionToFloor()
+    {
+        // 벽에서 지상으로 복귀 시 현재 카메라인 월드 수평각(Yaw)을 유지하여 시점 점프 방지
+        Vector3 lookForward = camPivot != null ? camPivot.forward : transform.forward;
+        Vector3 floorForward = Vector3.ProjectOnPlane(lookForward, Vector3.up).normalized;
+        if (floorForward.sqrMagnitude > 0.001f)
+        {
+            _yaw = Quaternion.LookRotation(floorForward, Vector3.up).eulerAngles.y;
+        }
+
+        _stateMachine = StateMachine.Floor;
+        if (_wallClimbCoroutine != null)
+        {
+            StopCoroutine(_wallClimbCoroutine);
+            _wallClimbCoroutine = null;
+        }
+        transform.rotation = Quaternion.Euler(0f, _yaw, 0f);
     }
 
     private IEnumerator WallCheckCoroutine()
     {
         while (true)
         {
-            Ray ray = new Ray();
-            ray.origin = headTransform.position;
-            ray.direction = (headTransform.forward + camPivot.forward).normalized;
-            Debug.DrawRay(ray.origin, ray.direction * rayMaxDistance, Color.red);
-            if (Physics.Raycast(ray, out RaycastHit hit, rayMaxDistance))
+            Transform rayDirTransform = headTransform != null ? headTransform : transform;
+            var ray = new Ray
             {
-                
-                float angle = Vector3.Angle(Vector3.up, hit.normal);
-                if (angle >= 45f)
+                origin = transform.position,
+                direction = rayDirTransform.forward
+            };
+            Debug.DrawRay(ray.origin, ray.direction * rayMaxDistance, Color.red);
+            if (Physics.Raycast(ray, out RaycastHit hit, rayMaxDistance, wallLayerMask))
+            {
+                _wallCheckCoroutine = null;
+
+                if (_wallClimbCoroutine != null)
                 {
-                    _stateMachine = StateMachine.Wall;
-                    _surfaceNormal = hit.normal;
-                    yield break;
+                    StopCoroutine(_wallClimbCoroutine);
                 }
+                _wallClimbCoroutine = StartCoroutine(WallClimbCoroutine());
+                yield break;
             }
+
             yield return null;
         }
+    }
+
+    private IEnumerator WallClimbCoroutine()
+    {
+        try
+        {
+            var ray = new Ray
+            {
+                origin = transform.position,
+                direction = transform.forward
+            };
+            if (Physics.Raycast(ray, out RaycastHit transHit, rayMaxDistance, wallLayerMask))
+            {
+                var angle = Vector3.Angle(Vector3.up, transHit.normal);
+                if (angle >= 45f)
+                {
+                    TransitionToWall(transHit.point, transHit.normal);
+                }
+            }
+            Transform arm, calf;
+            var upGoingDistance = 0f;
+
+            while (_stateMachine == StateMachine.Wall)
+            {
+                if (_isRightTurn)
+                {
+                    arm = rightUpperArm;
+                    calf = rightCalf;
+                }
+                else
+                {
+                    arm = leftUpperArm;
+                    calf = leftCalf;
+                }
+
+                if (arm == null || calf == null)
+                {
+                    yield return null;
+                    continue;
+                }
+
+                var armRay = new Ray
+                {
+                    origin = arm.position,
+                    direction = transform.forward
+                };
+                var calfRay = new Ray
+                {
+                    origin = calf.position,
+                    direction = transform.forward
+                };
+                Vector3 wallUp = Vector3.up;
+                Debug.DrawRay(armRay.origin, armRay.direction * rayMaxDistance, Color.red);
+                if (Physics.Raycast(armRay, out RaycastHit hit, rayMaxDistance, wallLayerMask))
+                {
+                    // 벽면 법선(기울기) 및 접촉점 최신화
+                    _surfaceNormal = hit.normal;
+                    _surfaceHitPoint = hit.point;
+
+                    // 1. 벽면을 따라 위로 향하는 방향 벡터 계산 (경사벽/오버행 대응)
+                    wallUp = Vector3.ProjectOnPlane(Vector3.up, hit.normal).normalized;
+                    if (wallUp.sqrMagnitude < 0.001f) // 천장/바닥 등 수직 투영이 0일 때 대비
+                    {
+                        wallUp = transform.up;
+                    }
+
+                    // 2. 어깨에서 벽면까지의 '직교 최단 거리' 계산
+                    var distanceToPlane = Mathf.Abs(Vector3.Dot(hit.normal, arm.position - hit.point));
+
+                    // 3. 팔이 닿는 범위 내인지 확인 및 NaN 방지
+                    if (armLength >= distanceToPlane)
+                    {
+                        // 벽면을 따라 팔을 뻗을 수 있는 높이차 (피타고라스)
+                        var reachUpDistance = Mathf.Sqrt(armLength * armLength - distanceToPlane * distanceToPlane);
+
+                        // 4. 어깨를 벽면에 직교 투영한 지점
+                        var projectedShoulderOnWall = arm.position - hit.normal * Vector3.Dot(hit.normal, arm.position - hit.point);
+
+                        // 5. 최종 손 위치 = 투영 지점 + 벽면 상향 * 도달 거리
+                        Vector3 handPoint = projectedShoulderOnWall + wallUp * reachUpDistance;
+                        upGoingDistance = reachUpDistance;
+
+                        Debug.DrawLine(arm.position, handPoint, Color.blue);
+                        if (_isRightTurn) _rightHandPos = handPoint;
+                        else _leftHandPos = handPoint;
+                    }
+                }
+
+                Debug.DrawRay(calfRay.origin, calfRay.direction * rayMaxDistance, Color.red);
+                if (Physics.Raycast(calfRay, out hit, rayMaxDistance, wallLayerMask))
+                {
+                    if (_isRightTurn) _rightFootPos = hit.point;
+                    else _leftFootPos = hit.point;
+                }
+
+                // 위치 이동 중에도 벽의 기울기 변화에 맞춰 실시간으로 법선/거리 추적
+                float duration = Mathf.Max(wallClimbDuration, 0.01f);
+                float counter = 0f;
+                while (counter < duration && _stateMachine == StateMachine.Wall)
+                {
+                    float dt = Time.deltaTime;
+                    counter += dt;
+
+                    // 캐릭터 위치 이동
+                    transform.position += wallUp * (upGoingDistance * (dt / duration));
+
+                    // 이동 중 벽면과의 거리 및 법선 실시간 보정
+                    if (Physics.Raycast(transform.position, transform.forward, out RaycastHit moveHit, rayMaxDistance, wallLayerMask))
+                    {
+                        _surfaceNormal = moveHit.normal;
+                        _surfaceHitPoint = moveHit.point;
+                        // 벽과의 간격(wallDistance) 유지
+                        transform.position = moveHit.point + moveHit.normal * wallDistance;
+                    }
+
+                    yield return null;
+                }
+
+                _isRightTurn = !_isRightTurn;
+            }
+        }
+        finally
+        {
+            _wallClimbCoroutine = null;
+        }
+    }
+    
+
+    private void OnAnimatorIK(int layerIndex)
+    {
+        if (animator == null) return;
+
+        // 벽 등반 상태일 때만 IK 적용 (필요에 따라 조건 수정)
+        float currentHandWeight = (_stateMachine == StateMachine.Wall) ? handIKWeight : 0f;
+        float currentFootWeight = (_stateMachine == StateMachine.Wall) ? footIKWeight : 0f;
+
+        // --- 오른손 (Right Hand) ---
+        animator.SetIKPositionWeight(AvatarIKGoal.RightHand, currentHandWeight);
+        animator.SetIKPosition(AvatarIKGoal.RightHand, _rightHandPos);
+
+        // --- 왼손 (Left Hand) ---
+        animator.SetIKPositionWeight(AvatarIKGoal.LeftHand, currentHandWeight);
+        animator.SetIKPosition(AvatarIKGoal.LeftHand, _leftHandPos);
+
+        // --- 오른발 (Right Foot) ---
+        animator.SetIKPositionWeight(AvatarIKGoal.RightFoot, currentFootWeight);
+        animator.SetIKPosition(AvatarIKGoal.RightFoot, _rightFootPos);
+
+        // --- 왼발 (Left Foot) ---
+        animator.SetIKPositionWeight(AvatarIKGoal.LeftFoot, currentFootWeight);
+        animator.SetIKPosition(AvatarIKGoal.LeftFoot, _leftFootPos);
     }
 
 
@@ -316,19 +521,19 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         float mouseX = mouseDelta.x;
         float mouseY = mouseDelta.y;
 
-        // 상하 각도 누적 (Pitch)
-        _xRotation -= mouseY;
-        _xRotation = Mathf.Clamp(_xRotation, minPitch, maxPitch);
+        // 1. Pitch 누적 및 클램핑 (공통)
+        _pitch = Mathf.Clamp(_pitch - mouseY, minPitch, maxPitch);
 
+        // 2. 상태별 Yaw 처리
         if (_stateMachine == StateMachine.Floor)
         {
-            // 지상에서는 몸체 전체를 좌우로 회전
-            transform.Rotate(Vector3.up * mouseX);
+            // 지상: 월드 360도 자유 회전
+            _yaw += mouseX;
         }
         else
         {
-            // 벽이나 천장에서는 몸체는 표면에 붙어있고 카메라 피벗만 둘러보기
-            _climbYaw += mouseX;
+            // 벽 등반: 벽면 기준 둘러보기 범위 제한
+            _yaw = Mathf.Clamp(_yaw + mouseX, -wallYawLimit, wallYawLimit);
         }
     }
 
