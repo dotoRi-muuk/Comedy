@@ -361,7 +361,7 @@ Transform:
   m_GameObject: {fileID: 341444931}
   serializedVersion: 2
   m_LocalRotation: {x: 0.049553912, y: 0.9982133, z: -0.005000895, w: -0.033009514}
-  m_LocalPosition: {x: 6.016341, y: 0.42766526, z: -1.0214419}
+  m_LocalPosition: {x: 4.299999, y: 0.6000078, z: -0.9128828}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -392,7 +392,7 @@ Transform:
   m_GameObject: {fileID: 551455889}
   serializedVersion: 2
   m_LocalRotation: {x: -0.49991274, y: 0.49991274, z: 0.50008726, w: 0.50008726}
-  m_LocalPosition: {x: -2.7632318, y: -0.03581721, z: 0.0031535842}
+  m_LocalPosition: {x: -2.07, y: -0.04, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -790,7 +790,7 @@ Transform:
   m_GameObject: {fileID: 1264778521}
   serializedVersion: 2
   m_LocalRotation: {x: 0.04955403, y: 0.99821335, z: 0.005003745, w: 0.033009227}
-  m_LocalPosition: {x: 6.016343, y: 0.42765772, z: 1.0214429}
+  m_LocalPosition: {x: 4.3, y: 0.6, z: 1.13}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -979,8 +979,8 @@ MonoBehaviour:
   leftCalf: {fileID: 1264778522}
   rightCalf: {fileID: 341444932}
   wallDistance: 0.2
-  armLength: 0.425
-  wallClimbDuration: 0.1
+  armLength: 0.45
+  wallClimbDuration: 1
   scrollSensitivity: 0.01
   minDistance: -10
   maxDistance: 0

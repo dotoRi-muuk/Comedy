@@ -441,7 +441,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
 
                         // 5. 최종 손 위치 = 투영 지점 + 벽면 상향 * 도달 거리
                         Vector3 handPoint = projectedShoulderOnWall + wallUp * reachUpDistance;
-                        upGoingDistance = reachUpDistance;
+                        upGoingDistance = reachUpDistance / 2;
 
                         Debug.DrawLine(arm.position, handPoint, Color.blue);
                         if (_isRightTurn) _rightHandPos = handPoint;
