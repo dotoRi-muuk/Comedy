@@ -59,6 +59,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     [SerializeField] private float wallDistance = 0.5f;
     [SerializeField] private float armLength = 0.7f;
     [SerializeField] private float wallClimbDuration = 0.5f;
+    [SerializeField] private float tweenConst = 0.1f;
 
     [Header("Scroll / Zoom Settings")] [SerializeField]
     private float scrollSensitivity = 0.01f;
@@ -447,6 +448,8 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                         if (_isRightTurn) _rightHandPos = handPoint;
                         else _leftHandPos = handPoint;
                     }
+                    
+                    
                 }
 
                 Debug.DrawRay(calfRay.origin, calfRay.direction * rayMaxDistance, Color.red);
@@ -489,29 +492,54 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     }
     
 
+    // 현재 보간된 IK 위치를 기억할 변수 추가
+    private Vector3 _currentRightHandPos;
+    private Vector3 _currentLeftHandPos;
+    private Vector3 _currentRightFootPos;
+    private Vector3 _currentLeftFootPos;
+
     private void OnAnimatorIK(int layerIndex)
     {
         if (animator == null) return;
+        if (layerIndex != 0) return; // 베이스 레이어에서만 실행 (다중 레이어 중복 호출 방지)
 
-        // 벽 등반 상태일 때만 IK 적용 (필요에 따라 조건 수정)
         float currentHandWeight = (_stateMachine == StateMachine.Wall) ? handIKWeight : 0f;
         float currentFootWeight = (_stateMachine == StateMachine.Wall) ? footIKWeight : 0f;
 
-        // --- 오른손 (Right Hand) ---
-        animator.SetIKPositionWeight(AvatarIKGoal.RightHand, currentHandWeight);
-        animator.SetIKPosition(AvatarIKGoal.RightHand, _rightHandPos);
+        // 목표 위치가 아직 잡히지 않은 경우(Vector3.zero) 애니메이션 기본 위치로 초기화
+        if (_currentRightHandPos == Vector3.zero) _currentRightHandPos = animator.GetIKPosition(AvatarIKGoal.RightHand);
+        if (_currentLeftHandPos == Vector3.zero) _currentLeftHandPos = animator.GetIKPosition(AvatarIKGoal.LeftHand);
+        if (_currentRightFootPos == Vector3.zero) _currentRightFootPos = animator.GetIKPosition(AvatarIKGoal.RightFoot);
+        if (_currentLeftFootPos == Vector3.zero) _currentLeftFootPos = animator.GetIKPosition(AvatarIKGoal.LeftFoot);
 
-        // --- 왼손 (Left Hand) ---
-        animator.SetIKPositionWeight(AvatarIKGoal.LeftHand, currentHandWeight);
-        animator.SetIKPosition(AvatarIKGoal.LeftHand, _leftHandPos);
+        // --- 오른손 ---
+        IKSet(AvatarIKGoal.RightHand, currentHandWeight, _rightHandPos, ref _currentRightHandPos);
 
-        // --- 오른발 (Right Foot) ---
-        animator.SetIKPositionWeight(AvatarIKGoal.RightFoot, currentFootWeight);
-        animator.SetIKPosition(AvatarIKGoal.RightFoot, _rightFootPos);
+        // --- 왼손 ---
+        IKSet(AvatarIKGoal.LeftHand, currentHandWeight, _leftHandPos, ref _currentLeftHandPos);
 
-        // --- 왼발 (Left Foot) ---
-        animator.SetIKPositionWeight(AvatarIKGoal.LeftFoot, currentFootWeight);
-        animator.SetIKPosition(AvatarIKGoal.LeftFoot, _leftFootPos);
+        // --- 오른발 (오타 수정: currentFootWeight) ---
+        IKSet(AvatarIKGoal.RightFoot, currentFootWeight, _rightFootPos, ref _currentRightFootPos);
+
+        // --- 왼발 ---
+        IKSet(AvatarIKGoal.LeftFoot, currentFootWeight, _leftFootPos, ref _currentLeftFootPos);
+    }
+
+    private void IKSet(AvatarIKGoal goal, float weight, Vector3 targetPos, ref Vector3 currentSmoothedPos)
+    {
+        animator.SetIKPositionWeight(goal, weight);
+        
+        if (weight > 0.001f && targetPos != Vector3.zero)
+        {
+            // 이전 프레임의 보간 위치에서 목표 위치로 서서히 이동
+            currentSmoothedPos = Vector3.Lerp(currentSmoothedPos, targetPos, tweenConst);
+            animator.SetIKPosition(goal, currentSmoothedPos);
+        }
+        else
+        {
+            // IK가 꺼져있을 때는 기본 애니메이션 위치 동기화
+            currentSmoothedPos = animator.GetIKPosition(goal);
+        }
     }
 
 
