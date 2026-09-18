@@ -59,6 +59,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     [SerializeField] private float armLength = 0.7f;
     [SerializeField] private float wallClimbDuration = 0.5f;
     [SerializeField] private float tweenConst = 0.1f;
+    [SerializeField] private float wallRotationTweenSpeed = 10f; // 벽 회전 트위닝 속도
     [SerializeField] private int searchCount = 10;
     [SerializeField] private float upGoingDistanceDivider = 0.5f;
 
@@ -77,6 +78,12 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
     private Vector3 _leftHandPos;
     private Vector3 _rightFootPos;
     private Vector3 _leftFootPos;
+
+    private Vector3 _rightHandNormal;
+    private Vector3 _leftHandNormal;
+    private Vector3 _rightFootNormal;
+    private Vector3 _leftFootNormal;
+    private Quaternion _smoothedWallRot = Quaternion.identity;
 
 
     [Header("IK Settings")] [Range(0f, 1f)] [SerializeField]
@@ -109,8 +116,9 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         _rb.freezeRotation = true;
         _rb.interpolation = RigidbodyInterpolation.Interpolate;
 
-        // 초기 수평 각도 설정
+        // 초기 수평 각도 및 회전 상태 설정
         _yaw = transform.eulerAngles.y;
+        _smoothedWallRot = transform.rotation;
 
         // 카메라 설정
         if (cam == null)
@@ -215,9 +223,14 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                 wallUp = transform.up;
             }
 
-            Quaternion wallBaseRot = Quaternion.LookRotation(-_surfaceNormal, wallUp);
-            transform.rotation = wallBaseRot;
-            camPivot.rotation = wallBaseRot * Quaternion.Euler(_pitch, _yaw, 0f);
+            Quaternion targetWallBaseRot = Quaternion.LookRotation(-_surfaceNormal, wallUp);
+
+            // 벽면 회전 트위닝 (프레임 독립적 Slerp 보간으로 두둑거림 방지)
+            float t = 1f - Mathf.Exp(-wallRotationTweenSpeed * Time.deltaTime);
+            _smoothedWallRot = Quaternion.Slerp(_smoothedWallRot, targetWallBaseRot, t);
+
+            transform.rotation = _smoothedWallRot;
+            camPivot.rotation = _smoothedWallRot * Quaternion.Euler(_pitch, _yaw, 0f);
         }
     }
 
@@ -315,7 +328,8 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         }
 
         transform.position = hitPoint + hitNormal * wallDistance;
-        transform.rotation = Quaternion.LookRotation(-hitNormal, wallUp);
+        _smoothedWallRot = Quaternion.LookRotation(-hitNormal, wallUp);
+        transform.rotation = _smoothedWallRot;
     }
 
     private void TransitionToFloor()
@@ -337,6 +351,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         }
 
         transform.rotation = Quaternion.Euler(0f, _yaw, 0f);
+        _smoothedWallRot = transform.rotation;
     }
 
     private IEnumerator WallCheckCoroutine()
@@ -367,7 +382,7 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         }
     }
 
-    private Vector3 SimpleRaycast(Vector3 origin, Vector3 direction, float rayMaxDistance)
+    private Vector3 SimpleRaycast(Vector3 origin, Vector3 direction, float rayMaxDistance, out Vector3 hitNormal)
     {
         var ray = new Ray
         {
@@ -376,9 +391,14 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
         };
         if (Physics.Raycast(ray, out var hit, rayMaxDistance, wallLayerMask))
         {
+            hitNormal = hit.normal;
             return hit.point;
         }
-        else return origin + direction * rayMaxDistance;
+        else
+        {
+            hitNormal = _surfaceNormal;
+            return origin + direction * rayMaxDistance;
+        }
     }
 
     private IEnumerator WallClimbCoroutine()
@@ -397,13 +417,18 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                 {
                     TransitionToWall(transHit.point, transHit.normal);
                 }
+                else
+                {
+                    TransitionToFloor();
+                    yield break;
+                }
             }
 
-            //각각을 초기화
-            _rightHandPos = SimpleRaycast(rightUpperArm.position, transform.forward, rayMaxDistance);
-            _leftHandPos = SimpleRaycast(leftUpperArm.position, transform.forward, rayMaxDistance);
-            _rightFootPos = SimpleRaycast(rightCalf.position, transform.forward, rayMaxDistance);
-            _leftFootPos = SimpleRaycast(leftCalf.position, transform.forward, rayMaxDistance);
+            // 손과 발의 초기 위치 및 법선 설정
+            _rightHandPos = SimpleRaycast(rightUpperArm.position, transform.forward, rayMaxDistance, out _rightHandNormal);
+            _leftHandPos = SimpleRaycast(leftUpperArm.position, transform.forward, rayMaxDistance, out _leftHandNormal);
+            _rightFootPos = SimpleRaycast(rightCalf.position, transform.forward, rayMaxDistance, out _rightFootNormal);
+            _leftFootPos = SimpleRaycast(leftCalf.position, transform.forward, rayMaxDistance, out _leftFootNormal);
 
             while (stateMachine == StateMachine.Wall)
             {
@@ -428,12 +453,8 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
 
                 RaycastHit hit;
 
-                // 예외 컷, 천장과 아래쪽.. 을 기준으로, 탐색을 진행
-                // 아래의 코드는 커다란 주석의 대체품
-
                 var armLowerBound = (transform.forward - transform.up).normalized;
                 var armUpperBound = transform.up;
-                var wallUp = Vector3.up;
                 RaycastHit lastHit = default;
                 bool anyHit = false;
 
@@ -457,69 +478,19 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                     }
                 }
 
-                float upGoingDistance;
                 if (anyHit)
                 {
-                    if (_isRightTurn) _rightHandPos = lastHit.point;
-                    else _leftHandPos = lastHit.point;
-
-                    wallUp = Vector3.ProjectOnPlane(Vector3.up, lastHit.normal).normalized;
-                    if (wallUp.sqrMagnitude < 0.001f)
+                    if (_isRightTurn)
                     {
-                        wallUp = transform.up;
+                        _rightHandPos = lastHit.point;
+                        _rightHandNormal = lastHit.normal;
                     }
-
-                    var reachUp = Vector3.Dot(lastHit.point - arm.position, wallUp);
-                    upGoingDistance = Mathf.Max(0f, reachUp * upGoingDistanceDivider);
+                    else
+                    {
+                        _leftHandPos = lastHit.point;
+                        _leftHandNormal = lastHit.normal;
+                    }
                 }
-                else
-                {
-                    upGoingDistance = 0f;
-                }
-
-                // var armRay = new Ray
-                // {
-                //     origin = arm.position,
-                //     direction = transform.forward
-                // };
-                // Vector3 wallUp = Vector3.up;
-                // Debug.DrawRay(armRay.origin, armRay.direction * rayMaxDistance, Color.red);
-                // if (Physics.Raycast(armRay, out  hit, rayMaxDistance, wallLayerMask))
-                // {
-                //     // 벽면 법선(기울기) 및 접촉점 최신화
-                //     _surfaceNormal = hit.normal;
-                //     _surfaceHitPoint = hit.point;
-                //
-                //     // 1. 벽면을 따라 위로 향하는 방향 벡터 계산 (경사벽/오버행 대응)
-                //     wallUp = Vector3.ProjectOnPlane(Vector3.up, hit.normal).normalized;
-                //     if (wallUp.sqrMagnitude < 0.001f) // 천장/바닥 등 수직 투영이 0일 때 대비
-                //     {
-                //         wallUp = transform.up;
-                //     }
-                //
-                //     // 2. 어깨에서 벽면까지의 '직교 최단 거리' 계산
-                //     var distanceToPlane = Mathf.Abs(Vector3.Dot(hit.normal, arm.position - hit.point));
-                //
-                //     // 3. 팔이 닿는 범위 내인지 확인 및 NaN 방지
-                //     if (armLength >= distanceToPlane)
-                //     {
-                //         // 벽면을 따라 팔을 뻗을 수 있는 높이차 (피타고라스)
-                //         var reachUpDistance = Mathf.Sqrt(armLength * armLength - distanceToPlane * distanceToPlane);
-                //
-                //         // 4. 어깨를 벽면에 직교 투영한 지점
-                //         var projectedShoulderOnWall = arm.position - hit.normal * Vector3.Dot(hit.normal, arm.position - hit.point);
-                //
-                //         // 5. 최종 손 위치 = 투영 지점 + 벽면 상향 * 도달 거리
-                //         Vector3 handPoint = projectedShoulderOnWall + wallUp * reachUpDistance;
-                //         upGoingDistance = reachUpDistance / 2;
-                //
-                //         Debug.DrawLine(arm.position, handPoint, Color.blue);
-                //         if (_isRightTurn) _rightHandPos = handPoint;
-                //         else _leftHandPos = handPoint;
-                //     }
-                //     
-                //     
-                // }
 
                 var calfRay = new Ray
                 {
@@ -530,12 +501,56 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
                 if (Physics.Raycast(calfRay, out hit, rayMaxDistance, wallLayerMask))
                 {
                     if (_isRightTurn)
+                    {
                         _leftFootPos = hit.point;
+                        _leftFootNormal = hit.normal;
+                    }
                     else
+                    {
                         _rightFootPos = hit.point;
+                        _rightFootNormal = hit.normal;
+                    }
                 }
 
-                // 위치 이동.. 인데, RB를 쓰는게 낫지 않을까요
+                // 1. 손발 ray들의 hit normal 평균 계산
+                Vector3 avgNormal = Vector3.zero;
+                int normalCount = 0;
+                if (_rightHandNormal.sqrMagnitude > 0.001f) { avgNormal += _rightHandNormal; normalCount++; }
+                if (_leftHandNormal.sqrMagnitude > 0.001f) { avgNormal += _leftHandNormal; normalCount++; }
+                if (_rightFootNormal.sqrMagnitude > 0.001f) { avgNormal += _rightFootNormal; normalCount++; }
+                if (_leftFootNormal.sqrMagnitude > 0.001f) { avgNormal += _leftFootNormal; normalCount++; }
+
+                if (normalCount > 0)
+                {
+                    _surfaceNormal = (avgNormal / normalCount).normalized;
+                }
+
+                // surface normal이 45도 미만(평지/완만한 경사)이면 Floor로 복귀
+                if (Vector3.Angle(Vector3.up, _surfaceNormal) < 23f)
+                {
+                    TransitionToFloor();
+                    yield break;
+                }
+
+                // 2. 손발 ray 평균 법선을 바탕으로 wallUp 결정
+                var wallUp = Vector3.ProjectOnPlane(Vector3.up, _surfaceNormal).normalized;
+                if (wallUp.sqrMagnitude < 0.001f)
+                {
+                    wallUp = transform.up;
+                }
+
+                float upGoingDistance;
+                if (anyHit)
+                {
+                    var reachUp = Vector3.Dot(lastHit.point - arm.position, wallUp);
+                    upGoingDistance = Mathf.Max(0f, reachUp * upGoingDistanceDivider);
+                }
+                else
+                {
+                    upGoingDistance = 0f;
+                }
+
+                // 위치 이동 보간
                 float duration = Mathf.Max(wallClimbDuration, 0.01f);
                 float counter = 0f;
                 while (counter < duration && stateMachine == StateMachine.Wall)
@@ -545,20 +560,15 @@ public class Un : MonoBehaviour, RawInput.IPlayerActions
 
                     // 캐릭터 위치 이동
                     transform.position += wallUp * (upGoingDistance * (dt / duration));
-                    
 
-                    // 이동 중 벽면과의 거리 및 법선 실시간 보정
+                    // 이동 중 벽면과의 거리 실시간 보정 (몸체 로테이팅 법선은 손발 평균 _surfaceNormal 유지)
                     if (Physics.Raycast(transform.position, -_surfaceNormal, out var moveHit,
                             rayMaxDistance,
                             wallLayerMask))
                     {
-                        _surfaceNormal = moveHit.normal;
-                        
                         var currentDistanceToWall = Vector3.Dot(transform.position - moveHit.point, _surfaceNormal);
                         var distanceError = wallDistance - currentDistanceToWall;
                         transform.position += _surfaceNormal * distanceError;
-                        
-                        // transform.position = moveHit.point + moveHit.normal * wallDistance;
                     }
 
                     yield return null;
